@@ -1,0 +1,10 @@
+Cher/Chère {recruteur},
+
+Je vous écris pour exprimer mon vif intérêt pour le poste de {poste} au sein de {entreprise}.
+
+{contenu}
+
+Je vous remercie de l'attention que vous porterez à ma candidature et reste à votre disposition pour un entretien.
+
+Cordialement,
+{prenom} {nom}
