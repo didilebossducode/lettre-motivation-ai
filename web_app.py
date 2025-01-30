@@ -16,7 +16,10 @@ from dotenv import load_dotenv
 # Charger les variables d'environnement
 load_dotenv()
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='templates/web')
+
+# Configuration
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max-limit
 
 # Internationalisation
 TRANSLATIONS = {
@@ -1442,64 +1445,7 @@ def create_word_document(content, filename):
 
 @app.route('/')
 def index():
-    return render_template('web/index.html')
-
-@app.route('/generate', methods=['POST'])
-def generate():
-    try:
-        data = request.json
-        
-        # Valider les données
-        try:
-            data = validate_letter_data(data)
-        except LocalizedValidationError as e:
-            return jsonify({
-                'error': str(e),
-                'success': False
-            }), 400
-        
-        # Récupérer les données
-        company = data.get('company', '')
-        position = data.get('position', '')
-        duration = data.get('duration', '')
-        start_date = data.get('start_date', '')
-        custom_paragraph = data.get('custom_paragraph', '')
-        template = data.get('template', '')
-        
-        # Traiter le formatage du texte
-        template = process_text_formatting(template)
-        
-        # Remplacer les marqueurs
-        replacements = {
-            '[[company]]': company,
-            '[[position]]': position,
-            '[[duration]]': duration,
-            '[[start_date]]': start_date,
-            '[[today_date]]': datetime.now().strftime('%d/%m/%Y'),
-            '[[custom]]': custom_paragraph
-        }
-        
-        for marker, value in replacements.items():
-            template = template.replace(marker, value)
-        
-        # Traiter le texte long si nécessaire
-        if len(template) > 1000:
-            sections = process_long_text(template)
-            template = "\n\n".join(sections)
-        
-        # Ajouter à l'historique
-        template_manager.add_to_history(company, position, template)
-        
-        return jsonify({
-            'content': template,
-            'success': True
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'error': str(e),
-            'success': False
-        }), 500
+    return app.send_static_file('index.html')
 
 @app.route('/export', methods=['POST'])
 def export_letter():
@@ -1528,14 +1474,7 @@ def export_letter():
             }), 400
         
         # Créer le document
-        output_file = document_manager.create_document(data, data['format'])
-        
-        # Lire le fichier
-        with open(output_file, 'rb') as f:
-            file_content = f.read()
-        
-        # Nettoyer
-        os.unlink(output_file)
+        file_content = document_manager.create_document(data, data['format'])
         
         # Déterminer le type MIME
         mime_type = ('application/vnd.openxmlformats-officedocument.wordprocessingml.document'
@@ -1552,213 +1491,6 @@ def export_letter():
     except Exception as e:
         return jsonify({
             'success': False,
-            'error': str(e)
-        }), 500
-
-@app.route('/templates', methods=['GET'])
-def get_templates():
-    return jsonify(template_manager.get_templates_by_category("General"))
-
-@app.route('/templates', methods=['POST'])
-def manage_template():
-    data = request.json
-    action = data.get('action')
-    name = data.get('name')
-    content = data.get('content')
-    
-    if action == 'add':
-        try:
-            # Valider les données du modèle
-            data = validate_template_data({
-                'name': name,
-                'content': content
-            })
-            
-            template = template_manager.add_template(data['name'], data['content'])
-            return jsonify({'success': True, 'message': 'Modèle ajouté avec succès.'})
-        except LocalizedValidationError as e:
-            return jsonify({'success': False, 'message': str(e)}), 400
-        except ValueError as e:
-            return jsonify({'success': False, 'message': str(e)}), 400
-    elif action == 'edit':
-        try:
-            # Valider les données du modèle
-            data = validate_template_data({
-                'name': name,
-                'content': content
-            })
-            
-            template = template_manager.update_template(data['name'], data['content'])
-            return jsonify({'success': True, 'message': 'Modèle modifié avec succès.'})
-        except LocalizedValidationError as e:
-            return jsonify({'success': False, 'message': str(e)}), 400
-        except ValueError as e:
-            return jsonify({'success': False, 'message': str(e)}), 400
-    elif action == 'delete':
-        try:
-            template_manager.delete_template(name)
-            return jsonify({'success': True, 'message': 'Modèle supprimé avec succès.'})
-        except ValueError as e:
-            return jsonify({'success': False, 'message': str(e)}), 400
-    else:
-        return jsonify({'success': False, 'message': 'Action invalide'}), 400
-
-@app.route('/history', methods=['GET'])
-def get_history():
-    return jsonify([h.__dict__ for h in template_manager.get_history()])
-
-@app.route('/preview', methods=['POST'])
-def preview_letter():
-    """Générer une prévisualisation de la lettre"""
-    try:
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({
-                'error': 'Aucune donnée reçue',
-                'success': False
-            }), 400
-        
-        # Formater la lettre
-        formatted = letter_formatter.format_letter(data)
-        
-        return jsonify({
-            'success': True,
-            'html': formatted['html'],
-            'css': formatted['css']
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'error': f"Erreur lors de la prévisualisation : {str(e)}",
-            'success': False
-        }), 500
-
-@app.route('/export', methods=['POST'])
-def export_letter():
-    """
-    Exporte la lettre au format Word ou PDF
-    """
-    try:
-        data = request.get_json()
-        
-        # Valider les données
-        required_fields = ['full_name', 'address', 'postal_code', 'city', 'phone', 'email',
-                         'company', 'company_address', 'company_postal_code', 'company_city',
-                         'subject', 'content']
-        
-        for field in required_fields:
-            if not data.get(field):
-                return jsonify({
-                    'success': False,
-                    'error': f'Le champ {field} est requis'
-                }), 400
-        
-        if data['format'] not in ['docx', 'pdf']:
-            return jsonify({
-                'success': False,
-                'error': 'Format non supporté'
-            }), 400
-        
-        # Créer un document Word temporaire
-        doc = Document()
-        
-        # Configurer les marges (2cm)
-        sections = doc.sections
-        for section in sections:
-            section.top_margin = Cm(2)
-            section.bottom_margin = Cm(2)
-            section.left_margin = Cm(2)
-            section.right_margin = Cm(2)
-        
-        # En-tête expéditeur
-        doc.add_paragraph(data['full_name'])
-        doc.add_paragraph(data['address'])
-        doc.add_paragraph(f"{data['postal_code']} {data['city']}")
-        doc.add_paragraph(f"Tél : {data['phone']}")
-        doc.add_paragraph(f"Email : {data['email']}")
-        
-        # Espace
-        doc.add_paragraph()
-        
-        # En-tête destinataire
-        doc.add_paragraph(data['company'])
-        doc.add_paragraph(data['company_address'])
-        doc.add_paragraph(f"{data['company_postal_code']} {data['company_city']}")
-        
-        # Espace
-        doc.add_paragraph()
-        
-        # Date et lieu
-        p = doc.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        p.add_run(f"{data['city']}, le {data['date']}")
-        
-        # Espace
-        doc.add_paragraph()
-        
-        # Objet
-        doc.add_paragraph(f"Objet : {data['subject']}")
-        
-        # Espace
-        doc.add_paragraph()
-        
-        # Contenu
-        for paragraph in data['content'].split('\n'):
-            if paragraph.strip():
-                p = doc.add_paragraph()
-                p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                p.add_run(paragraph)
-        
-        # Espace
-        doc.add_paragraph()
-        
-        # Signature
-        p = doc.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        p.add_run(data['full_name'])
-        
-        # Créer un fichier temporaire
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp:
-            doc.save(tmp.name)
-            
-            # Si format PDF demandé, convertir le fichier Word en PDF
-            if data['format'] == 'pdf':
-                pdf_path = tmp.name.replace('.docx', '.pdf')
-                convert(tmp.name, pdf_path)
-                
-                # Lire le fichier PDF
-                with open(pdf_path, 'rb') as pdf_file:
-                    pdf_content = pdf_file.read()
-                
-                # Nettoyer
-                os.unlink(pdf_path)
-                os.unlink(tmp.name)
-                
-                return send_file(
-                    io.BytesIO(pdf_content),
-                    mimetype='application/pdf',
-                    as_attachment=True,
-                    download_name=f"lettre_motivation_{datetime.now().strftime('%Y-%m-%d')}.pdf"
-                )
-            
-            # Sinon, renvoyer le fichier Word
-            else:
-                with open(tmp.name, 'rb') as docx_file:
-                    docx_content = docx_file.read()
-                
-                # Nettoyer
-                os.unlink(tmp.name)
-                
-                return send_file(
-                    io.BytesIO(docx_content),
-                    mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                    as_attachment=True,
-                    download_name=f"lettre_motivation_{datetime.now().strftime('%Y-%m-%d')}.docx"
-                )
-    
-    except Exception as e:
-        return jsonify({
             'error': str(e)
         }), 500
 
